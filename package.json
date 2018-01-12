@@ -1,0 +1,23 @@
+{
+  "name": "webrtc",
+  "version": "1.0.0",
+  "description": "simple webrtc library",
+  "main": "./peerconnection.js",
+  "scripts": {
+    "build": "node build.js"
+  },
+  "keywords": [
+    "webrtc"
+  ],
+  "author": "Alexandr",
+  "license": "ISC",
+  "dependencies": {
+    "util": "^0.10.3",
+    "wildemitter": "^1.2.0"
+  },
+  "devDependencies": {
+    "browserify": "^15.0.0",
+    "fs": "0.0.1-security",
+    "getusermedia": "^2.0.1"
+  }
+}
