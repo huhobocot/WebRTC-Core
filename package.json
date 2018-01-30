@@ -12,12 +12,12 @@
   "author": "Alexandr",
   "license": "ISC",
   "dependencies": {
-    "util": "^0.10.3",
-    "wildemitter": "^1.2.0"
+    "mockconsole": "0.0.1",
+    "wildemitter": "^1.2.0",
+    "getusermedia": "^2.0.1"
   },
   "devDependencies": {
     "browserify": "^15.0.0",
-    "fs": "0.0.1-security",
-    "getusermedia": "^2.0.1"
+    "fs": "0.0.1-security"
   }
 }

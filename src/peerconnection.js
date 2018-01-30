@@ -1,6 +1,4 @@
-var util = require('util');
-//var SJJ = require('sdp-jingle-json');
-var SJJ = require('./parsers');
+var parser = require('./parsers');
 var WildEmitter = require('wildemitter');
 
 function PeerConnection(config, constraints) {
@@ -132,7 +130,7 @@ function PeerConnection(config, constraints) {
     this._candidateBuffer = [];
 }
 
-util.inherits(PeerConnection, WildEmitter);
+PeerConnection.prototype = Object.create(WildEmitter.prototype);
 
 Object.defineProperty(PeerConnection.prototype, 'signalingState', {
     get: function () {
@@ -158,7 +156,7 @@ PeerConnection.prototype.addStream = function (stream) {
 // helper function to check if a remote candidate is a stun/relay
 // candidate or an ipv6 candidate
 PeerConnection.prototype._checkLocalCandidate = function (candidate) {
-    var cand = SJJ.toCandidateJSON(candidate);
+    var cand = parser.toCandidateJSON(candidate);
     if (cand.type == 'srflx') {
         this.hadLocalStunCandidate = true;
     } else if (cand.type == 'relay') {
@@ -172,7 +170,7 @@ PeerConnection.prototype._checkLocalCandidate = function (candidate) {
 // helper function to check if a remote candidate is a stun/relay
 // candidate or an ipv6 candidate
 PeerConnection.prototype._checkRemoteCandidate = function (candidate) {
-    var cand = SJJ.toCandidateJSON(candidate);
+    var cand = parser.toCandidateJSON(candidate);
     if (cand.type == 'srflx') {
         this.hadRemoteStunCandidate = true;
     } else if (cand.type == 'relay') {
@@ -220,7 +218,7 @@ PeerConnection.prototype.createOffer = function (constraints, cb) {
     cb = hasConstraints ? cb : constraints;
     cb = cb || function () {};
 
-    if (this.pc.signalingState === 'closed') return cb('Already closed');
+    if (this.pc.signalingState === 'closed') return cb('Peer already closed');
 
     // Actually generate the offer
     this.pc.createOffer(
@@ -405,7 +403,7 @@ PeerConnection.prototype._onIce = function (event) {
         };
         this._checkLocalCandidate(ice.candidate);
 
-        var cand = SJJ.toCandidateJSON(ice.candidate);
+        var cand = parser.toCandidateJSON(ice.candidate);
 
         var already;
         var idx;
