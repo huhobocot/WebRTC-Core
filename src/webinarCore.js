@@ -52,10 +52,10 @@ function WebinarCore(connection, options) {
         enableDataChannels: this.config.enableDataChannels
     };
     this.peerManager = new PeerManager(peerManagerConfig);
-    if (!this.config.isLeader) {
+    /*if (!this.config.isLeader) {
         var localPeer = this.peerManager.createLocalPeer(this.config.userId);
         localPeer.on("addStream", this._handleRemoteStream.bind(this));
-    }
+    }*/
 
     this.connection.on("onMessageReceived", this._handleMessage.bind(this));
     this.on("localStream", this._handleStream.bind(this));
@@ -92,10 +92,10 @@ WebinarCore.prototype.addPeer = function (id) {
 
         // let the 'negotiationneeded' event trigger offer generation
         peer.on("negotiationNeeded",
-            function () {
+            function() {
                 var pc = this;
                 pc.createOffer(self.config.receiveMedia,
-                    function (error, offer) {
+                    function(error, offer) {
                         if (error) {
                             console.error(error);
                             return;
@@ -112,15 +112,19 @@ WebinarCore.prototype.addPeer = function (id) {
         peer.on("addStream", this.emit.bind(this, "addStream"));
 
         //add opened streams
-        this.localStreams.forEach(function (stream) {
+        this.localStreams.forEach(function(stream) {
             self._sendStreamInfo("camera", stream.id);
             self.peerManager.addStream(stream);
         });
 
-        this.localScreens.forEach(function (stream) {
+        this.localScreens.forEach(function(stream) {
             self._sendStreamInfo("screen", stream.id);
             self.peerManager.addStream(stream);
         });
+    } else {
+        //recreate peer
+        this.peerManager.removePeer(id);
+        this.addPeer(id);
     }
 }
 
@@ -141,12 +145,10 @@ WebinarCore.prototype._handleMessage = function (message) {
             return;
 
         var localPeer = this.peerManager.localPeer;
-        /*if (msg.type === "offer") {
-            if (localPeer)
-                localPeer.close();
+        if (msg.type === "offer" && !localPeer) {
             localPeer = this.peerManager.createLocalPeer(userId);
             localPeer.on("addStream", this._handleRemoteStream.bind(this));
-        }*/
+        }
 
         pc = localPeer;
     }
