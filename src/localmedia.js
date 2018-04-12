@@ -1,5 +1,5 @@
 //var hark = require('hark');
-var getUserMedia = require('getusermedia');
+var getUserMedia = require('./getusermedia');
 var WildEmitter = require('wildemitter');
 var mockconsole = require('mockconsole');
 

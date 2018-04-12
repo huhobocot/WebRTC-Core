@@ -32,6 +32,7 @@ function WebinarCore(connection, options) {
         },
         enableDataChannels: false,
         isLeader: false,
+        isOneWay: true,
         userId: null
     };
     this.config = defaultConfig;
@@ -52,10 +53,9 @@ function WebinarCore(connection, options) {
         enableDataChannels: this.config.enableDataChannels
     };
     this.peerManager = new PeerManager(peerManagerConfig);
-    /*if (!this.config.isLeader) {
-        var localPeer = this.peerManager.createLocalPeer(this.config.userId);
-        localPeer.on("addStream", this._handleRemoteStream.bind(this));
-    }*/
+    if (!this.config.isLeader) {
+        this._createLocalPeer(this.config.userId);
+    }
 
     this.connection.on("onMessageReceived", this._handleMessage.bind(this));
     this.on("localStream", this._handleStream.bind(this));
@@ -78,38 +78,34 @@ WebinarCore.prototype.addPeer = function (id) {
     if (!peer) {
         peer = this.peerManager.createPeer(id);
         // send any ice candidates to the other peer
-        peer.on("ice",
-            function(evt) {
-                var pc = this;
-                if (evt.candidate) {
-                    var userId = self.config.userId;
-                    evt.from = userId;
-                    evt.type = "candidate";
-                    evt.to = pc.userId;
-                    self.connection.send(evt);
-                }
-            });
+        peer.on("ice", function(evt) {
+            var pc = this;
+            if (evt.candidate) {
+                var userId = self.config.userId;
+                evt.from = userId;
+                evt.type = "candidate";
+                evt.to = pc.userId;
+                self.connection.send(evt);
+            }
+        });
 
         // let the 'negotiationneeded' event trigger offer generation
-        peer.on("negotiationNeeded",
-            function() {
-                var pc = this;
-                pc.createOffer(self.config.receiveMedia,
-                    function(error, offer) {
-                        if (error) {
-                            console.error(error);
-                            return;
-                        }
+        peer.on("negotiationNeeded", function () {
+            var pc = this;
+            // Workaround for Chrome: skip nested negotiations
+            /*if (pc.isNegotiating)
+                return;*/
+            self._createOffer.bind(self);
+            self._createOffer(pc);
+        });
 
-                        var userId = self.config.userId;
-                        offer.from = userId;
-                        offer.to = pc.userId;
-                        self.connection.send(offer);
-                    });
-            });
+        peer.on("signalingStateChange", function () {
+            var pc = this;
+            pc.isNegotiating = (pc.signalingState !== "stable");
+        });
 
         // once remote stream arrives, show it in the remote video element
-        peer.on("addStream", this.emit.bind(this, "addStream"));
+        peer.on("addStream", this._handleRemoteStream.bind(this, peer));
 
         //add opened streams
         this.localStreams.forEach(function(stream) {
@@ -121,6 +117,10 @@ WebinarCore.prototype.addPeer = function (id) {
             self._sendStreamInfo("screen", stream.id);
             self.peerManager.addStream(stream);
         });
+
+        if (this.config.isLeader && !this.config.isOneWay) {
+            this._createOffer(peer);
+        }
     } else {
         //recreate peer
         this.peerManager.removePeer(id);
@@ -130,6 +130,28 @@ WebinarCore.prototype.addPeer = function (id) {
 
 WebinarCore.prototype.removePeer = function (id) {
     return this.peerManager.removePeer(id);
+}
+
+WebinarCore.prototype._createLocalPeer = function (userId) {
+    var self = this;
+    var localPeer = this.peerManager.createLocalPeer(userId);
+    localPeer.on("addStream", this._handleRemoteStream.bind(this, localPeer));
+    localPeer.on("ice", function (evt) {
+        var pc = this;
+        if (evt.candidate) {
+            evt.from = pc.userId;
+            evt.type = "candidate";
+            self.connection.send(evt);
+        }
+    });
+
+    //add opened streams
+    this.localStreams.forEach(function (stream) {
+        self._sendStreamInfo("camera", stream.id);
+        self.peerManager.addStream(stream);
+    });
+
+    return localPeer;
 }
 
 WebinarCore.prototype._handleMessage = function (message) {
@@ -145,21 +167,23 @@ WebinarCore.prototype._handleMessage = function (message) {
             return;
 
         var localPeer = this.peerManager.localPeer;
-        if (msg.type === "offer" && !localPeer) {
+        /*if (msg.type === "offer" && !localPeer) {
+            debugger;
             localPeer = this.peerManager.createLocalPeer(userId);
             localPeer.on("addStream", this._handleRemoteStream.bind(this));
-        }
-
+        }*/
+        
         pc = localPeer;
     }
 
     if (!pc) {
-        Error("Peer not found");
+        this.logger.error("Peer not found");
         return;
     }
 
     if (msg.type === "offer") {
-        pc.handleOffer(msg, function () {
+        pc.remoteId = msg.from;
+        pc.handleOffer(msg, function (err) {
             pc.createAnswer(function (err, answer) {
                 if (err) {
                     self.logger.error(err);
@@ -185,30 +209,44 @@ WebinarCore.prototype._handleMessage = function (message) {
         return;
     }
 
-    if (msg.type === "stream-info") {
-        self._streamsInfo[msg.streamId] = msg.data;
+    if (msg.type === "media-captured") {
+        self._streamsInfo[msg.data.streamId] = msg.data;
+
+        if (this.config.isLeader) {
+            this._createOffer(pc);
+        }
+
         return;
     }
 
     this.logger.warn("Unknown message:");
-    this.logger.log(msg);
+    this.logger.warn(msg);
 }
 
-WebinarCore.prototype._sendStreamInfo = function(type, streamId) {
-    var msg = {
-        type: "stream-info",
-        streamId: streamId,
-        data: {
-            type: type
-        }
-    }
-    this.connection.send(msg);
+WebinarCore.prototype._createOffer = function (pc) {
+    var self = this;
+    pc.createOffer(self.config.receiveMedia,
+        function (error, offer) {
+            if (error) {
+                this.logger.error(error);
+                return;
+            }
+
+            var userId = self.config.userId;
+            offer.from = userId;
+            offer.to = pc.userId;
+            self.connection.send(offer);
+        });
 }
 
 WebinarCore.prototype._handleStream = function (stream) {
     stream["type"] = "camera";
     this._sendStreamInfo("camera", stream.id);
     this.peerManager.addStream(stream);
+
+    //add local stream to local peer if TwoWay mode
+    if (this.peerManager.localPeer)
+        this.peerManager.localPeer.addStream(stream);
 }
 
 WebinarCore.prototype._handleScreen = function (stream) {
@@ -221,17 +259,24 @@ WebinarCore.prototype._handleStreamEnded = function (stream) {
     this.peerManager.removeStream(stream);
 }
 
-WebinarCore.prototype._handleRemoteStream = function (e) {
+WebinarCore.prototype._handleRemoteStream = function (peer, e) {
     var self = this;
-
     var tracks = e.stream.getTracks();
     if (!e.stream.active || tracks.length < 1)
         return;
 
     //extend stream with additional info
+    if (peer) {
+        e.stream["userId"] = peer.userId;
+
+        if (!this.isLeader && peer.remoteId)
+            e.stream["userId"] = peer.remoteId;
+    }
+
     var info = self._streamsInfo[e.stream.id];
     if (info)
         e.stream["type"] = info.type;
+
 
     this.remoteStreams.push(e.stream);
 
@@ -244,7 +289,20 @@ WebinarCore.prototype._handleRemoteStream = function (e) {
             }
         });
     });
+
     this.emit("remoteStream", e.stream);
+}
+
+WebinarCore.prototype._sendStreamInfo = function (type, streamId) {
+    var msg = {
+        type: "media-captured",
+        from: this.config.userId,
+        data: {
+            streamId: streamId,
+            type: type
+        }
+    }
+    this.connection.send(msg);
 }
 
 WebinarCore.prototype.connect = function (options) {

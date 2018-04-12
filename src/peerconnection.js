@@ -269,11 +269,11 @@ PeerConnection.prototype.handleOffer = function (offer, cb) {
             self._checkRemoteCandidate(line);
         }
     });
-    self.pc.setRemoteDescription(new RTCSessionDescription(offer),
-        function () {
-            cb();
-        },
-        cb
+    self.pc.setRemoteDescription(new RTCSessionDescription(offer), cb,
+        function (err) {
+            self.emit('error', err);
+            cb(err);
+        }
     );
 };
 
@@ -324,11 +324,11 @@ PeerConnection.prototype.handleAnswer = function (answer, cb) {
         }
     });
     self.pc.setRemoteDescription(
-        new RTCSessionDescription(answer),
-        function () {
-            cb(null);
-        },
-        cb
+        new RTCSessionDescription(answer), cb,
+        function (err) {
+            self.emit('error', err);
+            cb(err);
+        }
     );
 };
 

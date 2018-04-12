@@ -15,7 +15,6 @@ function PeerManager(options) {
         logger: console || mockconsole,
         peerConnectionConfig: {
             iceServers: [
-                { "urls": ["turn:webrtcweb.com:7788", "turn:webrtcweb.com:4455", "turn:webrtcweb.com:5544"], "username": "muazkh", "credential": "muazkh" },
                 { 'urls': 'stun:stun.l.google.com:19302' }
             ]
         },

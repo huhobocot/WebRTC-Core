@@ -12,12 +12,13 @@
   "author": "Alexandr",
   "license": "ISC",
   "dependencies": {
+    "getusermedia": "^2.0.1",
     "mockconsole": "0.0.1",
-    "wildemitter": "^1.2.0",
-    "getusermedia": "^2.0.1"
+    "webrtc-adapter": "^6.1.4",
+    "wildemitter": "^1.2.0"
   },
   "devDependencies": {
-    "browserify": "^15.0.0",
+    "browserify": "^15.2.0",
     "fs": "0.0.1-security"
   }
 }
