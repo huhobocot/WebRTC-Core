@@ -1,5 +1,4 @@
-﻿var mockconsole = require('mockconsole');
-var LocalMedia = require('./localmedia');
+﻿var LocalMedia = require('./localmedia');
 var PeerManager = require('./peerManager');
 
 function WebinarCore(connection, options) {
@@ -9,14 +8,17 @@ function WebinarCore(connection, options) {
 
     var defaultConfig = {
         debug: false,
-        logger: console || mockconsole,
+        logger: console,
         peerConnectionConfig: {
             iceServers: [
                 { 'urls': 'stun:stun.l.google.com:19302' }
             ]
         },
         peerConnectionConstraints: {
-            optional: []
+            optional: [
+                { DtlsSrtpKeyAgreement: true },
+                { RtpDataChannels: true }
+            ]
         },
         receiveMedia: {
             offerToReceiveAudio: 1,
@@ -30,6 +32,8 @@ function WebinarCore(connection, options) {
             },
             audio: true
         },
+        detectSpeakingEvents: false,
+        audioFallback: false,
         enableDataChannels: false,
         isLeader: false,
         isOneWay: true,
@@ -63,8 +67,11 @@ function WebinarCore(connection, options) {
     this.on("localStreamEnded", this._handleStreamEnded.bind(this));
     this.on("localScreenEnded", this._handleStreamEnded.bind(this));
 
+    this._log = this.logger.log.bind(this.logger, "WebinarCore: ");
+    
     this.remoteStreams = [];
     this._streamsInfo = {};
+    this._sdpBuffer = [];
 }
 
 WebinarCore.prototype = Object.create(LocalMedia.prototype);
@@ -76,7 +83,9 @@ WebinarCore.prototype.addPeer = function (id) {
 
     var peer = this.peerManager.getPeer(id);
     if (!peer) {
+        this._logDebug("Create peer for user ", id);
         peer = this.peerManager.createPeer(id);
+
         // send any ice candidates to the other peer
         peer.on("ice", function(evt) {
             var pc = this;
@@ -89,68 +98,94 @@ WebinarCore.prototype.addPeer = function (id) {
             }
         });
 
-        // let the 'negotiationneeded' event trigger offer generation
+        //create offer if needed
         peer.on("negotiationNeeded", function () {
             var pc = this;
-            // Workaround for Chrome: skip nested negotiations
-            /*if (pc.isNegotiating)
-                return;*/
             self._createOffer.bind(self);
             self._createOffer(pc);
-        });
-
-        peer.on("signalingStateChange", function () {
-            var pc = this;
-            pc.isNegotiating = (pc.signalingState !== "stable");
         });
 
         // once remote stream arrives, show it in the remote video element
         peer.on("addStream", this._handleRemoteStream.bind(this, peer));
 
+        peer.on("iceConnectionStateChange", function () {
+            if (this.iceConnectionState === "failed") {
+                self.addPeer(this.userId);
+            }
+        });
+
         //add opened streams
         this.localStreams.forEach(function(stream) {
-            self._sendStreamInfo("camera", stream.id);
-            self.peerManager.addStream(stream);
+            self._sendStreamInfo(stream, peer.userId);
+            peer.addStream(stream);
         });
 
         this.localScreens.forEach(function(stream) {
-            self._sendStreamInfo("screen", stream.id);
-            self.peerManager.addStream(stream);
+            self._sendStreamInfo(stream, peer.userId);
+            peer.addStream(stream);
         });
 
-        if (this.config.isLeader && !this.config.isOneWay) {
+        var needToCreateOffer = this.localStreams.length === 0 &&
+            this.localScreens.length === 0 &&
+            !this.config.isOneWay;
+
+        //create connection
+        if (this.config.isLeader && needToCreateOffer) {
             this._createOffer(peer);
         }
+
     } else {
         //recreate peer
+        this._logDebug("Recreate peer for user ", id);
         this.peerManager.removePeer(id);
         this.addPeer(id);
     }
 }
 
 WebinarCore.prototype.removePeer = function (id) {
+    this._logDebug("Remove peer for user ", id);
     return this.peerManager.removePeer(id);
 }
 
 WebinarCore.prototype._createLocalPeer = function (userId) {
     var self = this;
+    
     var localPeer = this.peerManager.createLocalPeer(userId);
     localPeer.on("addStream", this._handleRemoteStream.bind(this, localPeer));
     localPeer.on("ice", function (evt) {
         var pc = this;
         if (evt.candidate) {
             evt.from = pc.userId;
+            evt.to = "#leader";
             evt.type = "candidate";
             self.connection.send(evt);
         }
     });
 
-    //add opened streams
-    this.localStreams.forEach(function (stream) {
-        self._sendStreamInfo("camera", stream.id);
-        self.peerManager.addStream(stream);
+    localPeer.on("iceConnectionStateChange", function () {
+        if (this.iceConnectionState === "failed") {
+            self.emit("iceFailed");
+        }
     });
 
+    localPeer.on("signalingStateChange", function () {
+        //pop offer from queue
+        if (this.signalingState === "stable") {
+            var offer = self._sdpBuffer.shift();
+            if (!offer)
+                return;
+
+            self._handleMessage(offer);
+            self._logDebug("Pop offer from user ", offer.from);
+        }
+    });
+
+    //add opened streams
+    this.localStreams.forEach(function (stream) {
+        localPeer.addStream(stream);
+    });
+
+    this._logDebug("Create local peer for user ", userId);
     return localPeer;
 }
 
@@ -166,33 +201,38 @@ WebinarCore.prototype._handleMessage = function (message) {
         if (msg.to && msg.to !== userId)
             return;
 
-        var localPeer = this.peerManager.localPeer;
-        /*if (msg.type === "offer" && !localPeer) {
-            debugger;
-            localPeer = this.peerManager.createLocalPeer(userId);
-            localPeer.on("addStream", this._handleRemoteStream.bind(this));
-        }*/
-        
-        pc = localPeer;
+        pc = this.peerManager.localPeer;
     }
 
     if (!pc) {
-        this.logger.error("Peer not found");
+        self.logger.error("Peer not found: " + msg.from);
         return;
     }
 
     if (msg.type === "offer") {
+        this._logDebug("Receive offer from user ", msg.from);
+        pc = self._createLocalPeer(self.config.userId);
         pc.remoteId = msg.from;
+
+        if (pc.signalingState !== "stable") {
+            this._sdpBuffer.push(msg);
+            this._logDebug("Put offer from user " + msg.from + "to queue");
+            return;
+        }
+        
         pc.handleOffer(msg, function (err) {
+            if (err) return;
+        
             pc.createAnswer(function (err, answer) {
                 if (err) {
-                    self.logger.error(err);
                     return;
                 }
 
                 answer.from = self.config.userId;
                 answer.to = msg.from;
+                answer.id = msg.id;
                 self.connection.send(answer);
+                self._logDebug("Send answer ", answer);
             });
         });
 
@@ -205,62 +245,105 @@ WebinarCore.prototype._handleMessage = function (message) {
     }
 
     if (msg.type === "answer") {
+        this._logDebug("Receive answer from ", msg.from);
+
+        if (pc.offerId !== msg.id)
+            return;
+
         pc.handleAnswer(msg);
         return;
     }
 
     if (msg.type === "media-captured") {
         self._streamsInfo[msg.data.streamId] = msg.data;
+        self._logDebug("Receive media captured message", msg);
 
-        if (this.config.isLeader) {
-            this._createOffer(pc);
+        if (this.config.isLeader && !this.config.isOneWay) {
+            var rstreams = this.remoteStreams.filter(function (stream) {
+                return stream.id === msg.data.streamId;
+            });
+            
+            if (rstreams.length === 0)
+                this._createOffer(pc);
         }
 
         return;
     }
 
-    this.logger.warn("Unknown message:");
-    this.logger.warn(msg);
+    //another way to handle remote streams ended
+    if (msg.type === "stream-ended") {
+        var streams = self.remoteStreams.filter(function(stream) {
+            return stream.id === msg.data.streamId;
+        });
+
+        if (streams.length > 0)
+            self._handleRemoteStreamEnded(streams[0]);
+
+        this._logDebug("Receive stream ended message: ", msg);
+
+        return;
+    }
+
+    this.logger.warn("Unknown message:" + msg);
 }
 
 WebinarCore.prototype._createOffer = function (pc) {
     var self = this;
+
     pc.createOffer(self.config.receiveMedia,
         function (error, offer) {
             if (error) {
-                this.logger.error(error);
+                self.logger.error(error);
                 return;
             }
 
             var userId = self.config.userId;
             offer.from = userId;
             offer.to = pc.userId;
+            offer.id = Date.now();
+            pc.offerId = offer.id;
+
+            self._logDebug("Create offer ", offer);
             self.connection.send(offer);
         });
 }
 
 WebinarCore.prototype._handleStream = function (stream) {
-    stream["type"] = "camera";
-    this._sendStreamInfo("camera", stream.id);
+    var to = this.config.isLeader ? null : "#leader";
+    this._sendStreamInfo(stream, to);
     this.peerManager.addStream(stream);
 
     //add local stream to local peer if TwoWay mode
     if (this.peerManager.localPeer)
         this.peerManager.localPeer.addStream(stream);
+
+    this._logDebug("Stream captured ", stream);
 }
 
 WebinarCore.prototype._handleScreen = function (stream) {
-    stream["type"] = "screen";
-    this._sendStreamInfo("screen", stream.id);
+    this._sendStreamInfo(stream);
     this.peerManager.addStream(stream);
+    this._logDebug("Screen captured ", stream);
 }
 
 WebinarCore.prototype._handleStreamEnded = function (stream) {
     this.peerManager.removeStream(stream);
+
+    var msg = {
+        type: "stream-ended",
+        from: this.config.userId,
+        data: {
+            streamId: stream.id,
+            type: stream.type
+        }
+    }
+    this.connection.send(msg);
+    this._logDebug("Stream ended ", stream);
 }
 
 WebinarCore.prototype._handleRemoteStream = function (peer, e) {
     var self = this;
+
     var tracks = e.stream.getTracks();
     if (!e.stream.active || tracks.length < 1)
         return;
@@ -273,6 +356,18 @@ WebinarCore.prototype._handleRemoteStream = function (peer, e) {
             e.stream["userId"] = peer.remoteId;
     }
 
+    //set default type
+    if (e.stream.getVideoTracks().length > 0 &&
+        e.stream.getAudioTracks().length > 0)
+        e.stream.type = "camera";
+    else if (e.stream.getVideoTracks().length > 0
+        && e.stream.getAudioTracks().length === 0)
+        e.stream.type = "screen";
+    else if (e.stream.getVideoTracks().length === 0 &&
+        e.stream.getAudioTracks().length > 0)
+        e.stream.type = "camera"; // microphone
+
+    //update type from cache
     var info = self._streamsInfo[e.stream.id];
     if (info)
         e.stream["type"] = info.type;
@@ -283,9 +378,8 @@ WebinarCore.prototype._handleRemoteStream = function (peer, e) {
     e.stream.getTracks().forEach(function (track) {
         track.addEventListener("ended", function () {
             if (self._isAllTracksEnded(e.stream)) {
-                e.stream.stop();
-                self.remoteStreams.removeItem(e.stream);
-                self.emit("remoteStreamEnded", e.stream);
+                self._handleRemoteStreamEnded(e.stream);
+                self._logDebug("Remote stream ended: ", e.stream);
             }
         });
     });
@@ -293,16 +387,32 @@ WebinarCore.prototype._handleRemoteStream = function (peer, e) {
     this.emit("remoteStream", e.stream);
 }
 
-WebinarCore.prototype._sendStreamInfo = function (type, streamId) {
+WebinarCore.prototype._handleRemoteStreamEnded = function(stream) {
+    stream.stop();
+    this.remoteStreams.removeItem(stream);
+    this.emit("remoteStreamEnded", stream);
+}
+
+WebinarCore.prototype._sendStreamInfo = function (stream, to) {
     var msg = {
         type: "media-captured",
         from: this.config.userId,
         data: {
-            streamId: streamId,
-            type: type
+            streamId: stream.id,
+            type: stream.type
         }
     }
+
+    if (to)
+        msg.to = to;
     this.connection.send(msg);
+}
+
+WebinarCore.prototype._logDebug = function(message, args)
+{
+    if (this.config.debug && arguments.length > 0) {
+        this.logger.log(message, args);
+    }
 }
 
 WebinarCore.prototype.connect = function (options) {

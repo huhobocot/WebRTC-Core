@@ -15,8 +15,8 @@ function getScreenConstraints (cb) {
 
     if (window.navigator.userAgent.match("Firefox")) {
         var ffConstraints = {
-            mozMediaSource: "window",
-            mediaSource: "window"
+            mozMediaSource: "screen",
+            mediaSource: "screen"
         };
         return cb(null, ffConstraints);
     } else if (window.navigator.userAgent.match("Chrome")) {

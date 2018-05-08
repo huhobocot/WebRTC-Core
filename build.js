@@ -1,7 +1,7 @@
 const browserify = require('browserify');
 const fs = require('fs');
 
-var bundle = browserify({ standalone: 'PeerConnection' });
+var bundle = browserify({ standalone: 'PeerConnection', debug: true });
 bundle.add('./src/peerconnection');
 bundle.bundle(function (err, source) {
   if (err) {
@@ -10,7 +10,7 @@ bundle.bundle(function (err, source) {
   fs.writeFileSync('out/peerConnection.bundle.js', source);
 });
 
-bundle = browserify({ standalone: 'WebinarCore' });
+bundle = browserify({ standalone: 'WebinarCore', debug: true });
 bundle.add('./src/WebinarCore');
 bundle.bundle(function (err, source) {
   if (err) {

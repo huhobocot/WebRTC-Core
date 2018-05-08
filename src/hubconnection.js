@@ -1,11 +1,9 @@
-var mockconsole = require('mockconsole');
-
 function HubConnection(config) {
     var self = this;
     config = config || {};
     var defaultConfig = {
         debug: false,
-        logger: console || mockconsole,
+        logger: console,
         hubUrl: "/signalr/hubs",
         hubName: "chathub",
         eventId: "00000000-0000-0000-0000-000000000000"
@@ -41,7 +39,10 @@ function HubConnection(config) {
             return;
 
         setTimeout(function () {
-            self.hubConnection.start();
+            self.hubConnection.start()
+                .done(function () {
+                    self.logger.warn("Reconnected");
+                });
         }, 100); // Restart connection
     });
 }

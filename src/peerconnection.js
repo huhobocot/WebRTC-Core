@@ -1,5 +1,6 @@
 var parser = require('./parsers');
 var WildEmitter = require('wildemitter');
+//var Interop = require('sdp-interop');
 
 function PeerConnection(config, constraints) {
     var self = this;
@@ -57,8 +58,10 @@ function PeerConnection(config, constraints) {
         if (typeof self.pc.removeStream === 'function') {
             self.pc.removeStream.apply(self.pc, arguments);
         } else if (typeof self.pc.removeTrack === 'function') {
-            stream.getTracks().forEach(function (track) {
-                self.pc.removeTrack(track);
+            self.pc.getSenders().forEach(function(sender) {
+                if (sender.track && stream.getTracks().indexOf(sender.track) !== -1) {
+                    self.pc.removeTrack(sender);
+                }
             });
         }
     };
@@ -79,24 +82,10 @@ function PeerConnection(config, constraints) {
     this.pc.onicecandidate = this._onIce.bind(this);
     this.pc.ondatachannel = this._onDataChannel.bind(this);
 
-    this.localDescription = {
-        contents: []
-    };
-    this.remoteDescription = {
-        contents: []
-    };
-
     this.config = {
         debug: false,
-        sid: '',
-        isInitiator: true,
         sdpSessionID: Date.now(),
-        useJingle: false
-    };
-
-    this.iceCredentials = {
-        local: {},
-        remote: {}
+        logger: console
     };
 
     // apply our config
@@ -104,19 +93,23 @@ function PeerConnection(config, constraints) {
         this.config[item] = config[item];
     }
 
+    this.logger = this.config.logger || console;
+
     if (this.config.debug) {
         this.on('*', function () {
-            var logger = config.logger || console;
-            logger.log('PeerConnection event:', arguments);
+            self.logger.log('PeerConnection event:', arguments);
         });
     }
+
     this.hadLocalStunCandidate = false;
     this.hadRemoteStunCandidate = false;
     this.hadLocalRelayCandidate = false;
     this.hadRemoteRelayCandidate = false;
-
     this.hadLocalIPv6Candidate = false;
     this.hadRemoteIPv6Candidate = false;
+
+    //Initialize UnifidPlan <--> PlanB Interop
+    //this.interop = new Interop.Interop();
 
     // keeping references for all our data channels
     // so they dont get garbage collected
@@ -128,6 +121,7 @@ function PeerConnection(config, constraints) {
     this._localDataChannels = [];
 
     this._candidateBuffer = [];
+    this._iceBuffer = [];
 }
 
 PeerConnection.prototype = Object.create(WildEmitter.prototype);
@@ -183,7 +177,7 @@ PeerConnection.prototype._checkRemoteCandidate = function (candidate) {
 
 
 // Init and add ice candidate object with correct constructor
-PeerConnection.prototype.processIce = function (update, cb) {
+PeerConnection.prototype.processIce = function (msg, cb) {
     cb = cb || function () {};
     var self = this;
 
@@ -192,19 +186,26 @@ PeerConnection.prototype.processIce = function (update, cb) {
     if (this.pc.signalingState === 'closed') return cb();
 
     // working around https://code.google.com/p/webrtc/issues/detail?id=3669
-    if (update.candidate && update.candidate.candidate.indexOf('a=') !== 0) {
-        update.candidate.candidate = 'a=' + update.candidate.candidate;
+    if (msg.candidate && msg.candidate.candidate.indexOf('a=') !== 0) {
+        msg.candidate.candidate = 'a=' + msg.candidate.candidate;
     }
 
-    self.pc.addIceCandidate(
-        new RTCIceCandidate(update.candidate),
-        function () { },
-        function (err) {
+    self._checkRemoteCandidate(msg.candidate.candidate);
+
+    if (!self.pc.remoteDescription) {
+        self._iceBuffer.push(msg.candidate);
+        return;
+    }
+
+    self.pc.addIceCandidate(new RTCIceCandidate(msg.candidate))
+        .then(function () {
+            return cb();
+        })
+        .catch(function (err) {
             self.emit('error', err);
-        }
-    );
-    self._checkRemoteCandidate(update.candidate.candidate);
-    cb();
+            //self.logger.error(err);
+            return cb(err);
+    });
 };
 
 // Generate and emit an offer with the given constraints
@@ -221,18 +222,18 @@ PeerConnection.prototype.createOffer = function (constraints, cb) {
     if (this.pc.signalingState === 'closed') return cb('Peer already closed');
 
     // Actually generate the offer
-    this.pc.createOffer(
-        function (offer) {
-            // does not work for jingle, but jingle.js doesn't need
+    this.pc.createOffer(mediaConstraints)
+        .then(function (offer) {
+            self._candidateBuffer = [];
+
             // this hack...
             var expandedOffer = {
                 type: 'offer',
                 sdp: offer.sdp
             };
-            
-            self._candidateBuffer = [];
-            self.pc.setLocalDescription(offer,
-                function () {
+
+            return self.pc.setLocalDescription(offer)
+                .then(function () {
                     expandedOffer.sdp.split('\r\n').forEach(function (line) {
                         if (line.indexOf('a=candidate:') === 0) {
                             self._checkLocalCandidate(line);
@@ -240,20 +241,14 @@ PeerConnection.prototype.createOffer = function (constraints, cb) {
                     });
 
                     self.emit('offer', expandedOffer);
-                    cb(null, expandedOffer);
-                },
-                function (err) {
-                    self.emit('error', err);
-                    cb(err);
-                }
-            );
-        },
-        function (err) {
+                    return cb(null, expandedOffer);
+                })
+        })
+        .catch(function (err) {
             self.emit('error', err);
-            cb(err);
-        },
-        mediaConstraints
-    );
+            self.logger.error(err);
+            return cb(err);
+        });
 };
 
 
@@ -269,12 +264,34 @@ PeerConnection.prototype.handleOffer = function (offer, cb) {
             self._checkRemoteCandidate(line);
         }
     });
-    self.pc.setRemoteDescription(new RTCSessionDescription(offer), cb,
-        function (err) {
+
+    var description = new RTCSessionDescription(offer);
+
+    /*try {
+    if (navigator.mozGetUserMedia)
+        description = this.interop.toUnifiedPlan(description);
+
+    if (navigator.webkitGetUserMedia)
+        description = this.interop.toPlanB(description);
+    } catch(err) {};*/
+
+    self.pc.setRemoteDescription(description)
+        .then(function (){
+            var promises = [];
+            self._iceBuffer.forEach(function(candidate){
+                promises.push(self.pc.addIceCandidate(candidate));
+            });
+            self._iceBuffer = [];
+            return Promise.all(promises);
+        })
+        .then(function () {
+            return cb();
+        })
+        .catch(function (err) {
             self.emit('error', err);
-            cb(err);
-        }
-    );
+            self.logger.error(err);
+            return cb(err);
+        });
 };
 
 // Answer an offer with audio only
@@ -323,22 +340,46 @@ PeerConnection.prototype.handleAnswer = function (answer, cb) {
             self._checkRemoteCandidate(line);
         }
     });
-    self.pc.setRemoteDescription(
-        new RTCSessionDescription(answer), cb,
-        function (err) {
+
+    var description = new RTCSessionDescription(answer);
+
+    /*try {
+    if (navigator.mozGetUserMedia)
+        description = this.interop.toUnifiedPlan(description);
+    
+    if (navigator.webkitGetUserMedia)
+        description = this.interop.toPlanB(description);
+    } catch(err) {};*/
+
+    self.pc.setRemoteDescription(description)
+        .then(function () {
+            return cb();
+        })
+        .catch(function (err) {
             self.emit('error', err);
-            cb(err);
-        }
-    );
+            self.logger.error(err);
+            return cb(err);
+        });
 };
 
 // Close the peer connection
 PeerConnection.prototype.close = function () {
-    this.pc.close();
-
     this._localDataChannels = [];
     this._remoteDataChannels = [];
 
+    this.off('removeTrack');
+    this.off('addStream');
+    this.off('negotiationNeeded');
+    this.off('iceConnectionStateChange');
+    this.off('signalingStateChange');
+    this.off('error');
+    this.off('offer');
+    this.off('answer');
+    this.off('ice');
+    this.off('endOfCandidates');
+    this.off('addChannel');
+
+    this.pc.close();
     this.emit('close');
 };
 
@@ -353,18 +394,17 @@ PeerConnection.prototype._answer = function (constraints, cb) {
 
     if (this.pc.signalingState === 'closed') return cb('Already closed');
 
-    self.pc.createAnswer(
-        function (answer) {
-            var sim = [];
-
+    self.pc.createAnswer(constraints)
+        .then(function (answer) {
+            self._candidateBuffer = [];
+            
             var expandedAnswer = {
                 type: 'answer',
                 sdp: answer.sdp
             };
-            
-            self._candidateBuffer = [];
-            self.pc.setLocalDescription(answer,
-                function () {
+
+            return self.pc.setLocalDescription(answer)
+                .then(function () {
                     expandedAnswer.sdp.split('\r\n').forEach(function (line) {
                         if (line.indexOf('a=candidate:') === 0) {
                             self._checkLocalCandidate(line);
@@ -372,20 +412,14 @@ PeerConnection.prototype._answer = function (constraints, cb) {
                     });
                     
                     self.emit('answer', expandedAnswer);
-                    cb(null, expandedAnswer);
-                },
-                function (err) {
-                    self.emit('error', err);
-                    cb(err);
-                }
-            );
-        },
-        function (err) {
+                    return cb(null, expandedAnswer);
+                });
+        })
+        .catch(function (err) {
             self.emit('error', err);
-            cb(err);
-        },
-        constraints
-    );
+            self.logger.error(err);
+            return cb(err);
+        });
 };
 
 // Internal method for emitting ice candidates on our peer object

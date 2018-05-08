@@ -1,7 +1,6 @@
 //var hark = require('hark');
 var getUserMedia = require('./getusermedia');
 var WildEmitter = require('wildemitter');
-var mockconsole = require('mockconsole');
 
 function LocalMedia(opts) {
     opts = opts || {};
@@ -15,7 +14,7 @@ function LocalMedia(opts) {
             video: true
         },
         //harkOptions: null,
-        logger: console || mockconsole
+        logger: console
     };
     this.config = defaultConfig;
     for (var item in opts) {
@@ -69,6 +68,7 @@ LocalMedia.prototype.captureUserMedia = function (mediaConstraints, cb) {
             /*if (constraints.audio && self.config.detectSpeakingEvents) {
                 self._setupAudioMonitor(stream, self.config.harkOptions);
             }*/
+            stream["type"] = "camera";
             self.localStreams.push(stream);
             self._subscribeForEnded(stream);
 
@@ -110,6 +110,7 @@ LocalMedia.prototype.startScreenShare = function (constraints, cb) {
 
     getUserMedia(constraints, function (err, stream) {
         if (!err) {
+            stream["type"] = "screen";
             self.localScreens.push(stream);
             self._subscribeForEnded(stream);
             self.emit("localScreen", stream);
@@ -121,6 +122,18 @@ LocalMedia.prototype.startScreenShare = function (constraints, cb) {
             cb(err, stream);
         }
     });
+};
+
+LocalMedia.prototype.attachStream = function (stream) {
+
+    if (stream.getTracks().length === 0)
+        return;
+
+    stream.type = stream.getVideoTracks().length > 0 ? "video" : "audio";
+
+    this.localStreams.push(stream);
+    this._subscribeForEnded(stream);
+    this.emit("localStream", stream);
 };
 
 // Audio controls

@@ -1,18 +1,13 @@
-﻿var WildEmitter = require('wildemitter');
-var mockconsole = require('mockconsole');
-var PeerConnection = require('./peerconnection')
+﻿var PeerConnection = require('./peerconnection')
 
 function PeerManager(options) {
     options = options || {}
     this.peers = [];
     this.localPeer = null;
 
-    // call emitter constructor
-    WildEmitter.call(this);
-
     var defaultConfig = {
         debug: false,
-        logger: console || mockconsole,
+        logger: console,
         peerConnectionConfig: {
             iceServers: [
                 { 'urls': 'stun:stun.l.google.com:19302' }
@@ -32,8 +27,6 @@ function PeerManager(options) {
     }
     this.logger = this.config.logger;
 }
-
-PeerManager.prototype = Object.create(WildEmitter.prototype);
 
 PeerManager.prototype._createPeer = function (id) {
     var peer = new PeerConnection(this.config.peerConnectionConfig, this.config.peerConnectionConstraints);

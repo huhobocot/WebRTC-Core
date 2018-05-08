@@ -14,7 +14,8 @@
   "dependencies": {
     "getusermedia": "^2.0.1",
     "mockconsole": "0.0.1",
-    "webrtc-adapter": "^6.1.4",
+    "sdp-interop": "^0.1.12",
+    "webrtc-adapter": "^6.1.5",
     "wildemitter": "^1.2.0"
   },
   "devDependencies": {
